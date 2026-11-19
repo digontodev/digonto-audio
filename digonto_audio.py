@@ -10,7 +10,7 @@ sys.path.insert(0, HERE)
 import numpy as np
 from PySide6.QtCore import QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QFont, QKeySequence
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDockWidget, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QListWidget,
+from PySide6.QtWidgets import (QMenu, QApplication, QCheckBox, QComboBox, QDockWidget, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QListWidget,
                                QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSlider, QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
 import digonto_ui as ui
@@ -317,14 +317,36 @@ class Main(QMainWindow):
         self.bar = self._build_bar()
         self.inner = QMainWindow()
         self.inner.setWindowFlags(Qt.Widget)
-        self.inner.setCentralWidget(self.tabs)
+        from PySide6.QtWidgets import QStackedWidget
+        self.start = ui.StartScreen(
+            "Record, edit and clean up sound - WAV, MP3, FLAC, OGG and more",
+            [("New sound", "new", self.new_sound, True), ("Open …", "open", self.open_dialog, False),
+             ("Record", "record", self.record, False)],
+            "or drop sound files here", lambda: ui.recent_paths(SLUG), self.open_path)
+        self.centre = QStackedWidget()
+        self.centre.addWidget(self.start)
+        self.centre.addWidget(self.tabs)
+        self.inner.setCentralWidget(self.centre)
+        self.rail = ui.Rail(
+            [("new", "new", "New sound (Ctrl+N)", self.new_sound),
+             ("open", "open", "Open (Ctrl+O)", self.open_dialog),
+             ("save", "save", "Save project (Ctrl+S)", self.save),
+             ("export", "export", "Save as / export", self.rail_export),
+             None,
+             ("record", "record", "Record from the microphone", self.record),
+             ("play", "play", "Play / pause (Space)", self.toggle_play)],
+            [("settings", "settings", "Settings and help", self.rail_settings)])
         central = QWidget()
         cl = QVBoxLayout(central)
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(0)
         cl.addWidget(hd)
         cl.addWidget(self.bar)
-        cl.addWidget(self.inner, 1)
+        body = QHBoxLayout()
+        body.setSpacing(0)
+        body.addWidget(self.rail)
+        body.addWidget(self.inner, 1)
+        cl.addLayout(body, 1)
         self.setCentralWidget(central)
 
         self.meter = Meter()
@@ -517,9 +539,29 @@ class Main(QMainWindow):
         self.refresh_all()
         QTimer.singleShot(0, v.zoom_all)
 
+    def rail_export(self):
+        m = QMenu(self)
+        m.addAction("Save as …", self.save_as)
+        m.addAction("Export sound …", lambda: self.export_dialog(False))
+        m.addAction("Export the selection …", lambda: self.export_dialog(True))
+        b = self.rail.button("export")
+        m.exec(b.mapToGlobal(b.rect().topRight()))
+
+    def rail_settings(self):
+        m = QMenu(self)
+        m.addAction("Keyboard shortcuts", lambda: ui.show_all_shortcuts(self, APP_NAME))
+        m.addAction(f"About {APP_NAME}", self.about)
+        b = self.rail.button("settings")
+        m.exec(b.mapToGlobal(b.rect().topRight()))
+
     def refresh_all(self):
         d = self.doc
         has = d is not None
+        if hasattr(self, "rail"):
+            self.rail.set_enabled(["save", "export", "play"], has)
+            if not has:
+                self.start.refresh()
+            self.centre.setCurrentIndex(1 if self.tabs.count() else 0)
         self.menuBar().setEnabled(True)
         if has:
             for i in range(self.tabs.count()):
@@ -621,13 +663,21 @@ class Main(QMainWindow):
         self.settings.setValue("last_dir", os.path.dirname(path))
         name = os.path.splitext(os.path.basename(path))[0]
         proj = path.lower().endswith((aio.PROJECT_EXT, aio.LEGACY_EXT))
+        if hasattr(ui, "add_recent"):
+            ui.add_recent(SLUG, path)
         self.add_doc(Doc(x, sr, name, extra.get("markers", []), path if proj else None, src=None if proj else path))
 
     def dragEnterEvent(self, e):
         if e.mimeData().hasUrls():
             e.acceptProposedAction()
+            if self.centre.currentIndex() == 0:
+                self.start.set_dropping(True)
+
+    def dragLeaveEvent(self, e):
+        self.start.set_dropping(False)
 
     def dropEvent(self, e):
+        self.start.set_dropping(False)
         for u in e.mimeData().urls():
             if u.isLocalFile():
                 self.open_path(u.toLocalFile())
